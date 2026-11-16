@@ -1,0 +1,21 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "map-data-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": ["/api/*", "/admin/*"] },
+  "limits": { "cpu_ms": 300000 },
+  "d1_databases": [
+    // database_id は `wrangler d1 create maps` の結果に置き換える
+    { "binding": "DB", "database_name": "maps", "database_id": "REPLACE_ME", "migrations_dir": "migrations" }
+  ],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "maps-data" }],
+  "vars": {
+    // 取得元 URL。未検証のものは docs/sources.md を参照
+    "ESTAT_BOUNDARY_URL": "https://www.e-stat.go.jp/gis/statmap-search/data?dlserveyId=A002005212020&code={city}&coordSys=1&format=shape&downloadType=5&datum=2011",
+    "ESTAT_AGE_URL": "https://www.e-stat.go.jp/gis/statmap-search/data?statsId=T001082&code={pref}&downloadType=2",
+    "GSI_DEM_URL": "https://cyberjapandata.gsi.go.jp/xyz/dem/{z}/{x}/{y}.txt"
+  }
+  // シークレット: ADMIN_TOKEN（`wrangler secret put ADMIN_TOKEN`）
+}
