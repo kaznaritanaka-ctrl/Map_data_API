@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>空白地マップ</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<style>
+  :root { --bg:#fff; --fg:#1b1f24; --mut:#5c6670; --line:#d9dee3; --acc:#b3261e; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#15181c; --fg:#e8ebee; --mut:#9aa4ae; --line:#2c333a; --acc:#ff8a80; } }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; font:15px/1.5 system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif; color:var(--fg); background:var(--bg); }
+  #map { position:absolute; inset:0 0 44vh 0; }
+  #sheet { position:absolute; left:0; right:0; bottom:0; height:44vh; overflow:auto; background:var(--bg); border-top:1px solid var(--line); padding:10px 14px calc(10px + env(safe-area-inset-bottom)); }
+  .row { display:flex; gap:10px; align-items:center; margin:6px 0; }
+  .row label { flex:0 0 5.5em; color:var(--mut); font-size:13px; }
+  .row input[type=range] { flex:1; min-width:0; }
+  .row output { flex:0 0 4.5em; text-align:right; font-variant-numeric:tabular-nums; }
+  select { font:inherit; padding:6px 8px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); max-width:100%; }
+  .note { color:var(--mut); font-size:12px; margin:6px 0 10px; }
+  ol { margin:0; padding:0; list-style:none; }
+  li button { all:unset; display:flex; width:100%; gap:8px; padding:9px 0; border-top:1px solid var(--line); cursor:pointer; }
+  li .n { flex:0 0 1.8em; color:var(--mut); font-variant-numeric:tabular-nums; }
+  li .t { flex:1; min-width:0; overflow-wrap:anywhere; }
+  li .v { flex:0 0 auto; text-align:right; font-variant-numeric:tabular-nums; }
+  li small { display:block; color:var(--mut); }
+  #status { color:var(--mut); font-size:13px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="sheet">
+  <div class="row"><label for="city">市区町村</label><select id="city"></select></div>
+  <div class="row"><label for="dist">距離</label><input id="dist" type="range" min="200" max="1500" step="50" value="500"><output id="distO"></output></div>
+  <div class="row"><label for="elev">標高差</label><input id="elev" type="range" min="5" max="60" step="5" value="20"><output id="elevO"></output></div>
+  <p class="note">最寄りの薬局まで、距離または標高差がしきい値以上の町丁目を、75歳以上人口の多い順に表示。供給点は薬局のみで、ドラッグストアは未反映。距離は直線距離。</p>
+  <div id="status">読み込み中…</div>
+  <ol id="list"></ol>
+</div>
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const api = async (p) => { const r = await fetch(p); if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status); return r.json(); };
+const map = new maplibregl.Map({
+  container: "map", center: [135.19, 34.69], zoom: 10.5,
+  style: { version: 8, sources: { gsi: { type: "raster", tiles: ["https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png"], tileSize: 256, attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html">地理院タイル</a>｜e-Stat｜厚生労働省 医療情報ネット' } }, layers: [{ id: "gsi", type: "raster", source: "gsi" }] },
+});
+map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+let areas = [], popup;
+const hard = (a, d, e) => (a.dist_m != null && a.dist_m >= d) || (a.elev_diff_m != null && Math.abs(a.elev_diff_m) >= e);
+
+function render() {
+  const d = +$("dist").value, e = +$("elev").value;
+  $("distO").textContent = d + " m"; $("elevO").textContent = e + " m";
+  const ranked = areas.filter((a) => a.pop_75 != null && hard(a, d, e)).sort((x, y) => y.pop_75 - x.pop_75);
+  const max = Math.max(1, ...ranked.map((a) => a.pop_75));
+  // 行きにくい町丁目だけ、75歳以上人口に応じて濃くする。それ以外は薄い灰色
+  const expr = ["match", ["get", "code"]];
+  for (const a of ranked) expr.push(a.area_code, `rgba(179,38,30,${(0.2 + 0.65 * (a.pop_75 / max)).toFixed(2)})`);
+  expr.push("rgba(120,130,140,0.10)");
+  if (map.getLayer("areas-fill")) map.setPaintProperty("areas-fill", "fill-color", ranked.length ? expr : "rgba(120,130,140,0.10)");
+  const unknown = areas.filter((a) => a.pop_75 == null).length;
+  $("status").textContent = `該当 ${ranked.length} ／ 全 ${areas.length} 町丁目` + (unknown ? `（人口が秘匿・欠損の ${unknown} は対象外）` : "");
+  $("list").innerHTML = "";
+  ranked.slice(0, 20).forEach((a, i) => {
+    const li = document.createElement("li"), b = document.createElement("button");
+    b.innerHTML = `<span class="n">${i + 1}</span><span class="t"></span><span class="v">${a.pop_75} 人<small>${a.dist_m ?? "–"} m／${a.elev_diff_m ?? "–"} m</small></span>`;
+    b.querySelector(".t").textContent = a.name || a.area_code;
+    b.onclick = () => { map.flyTo({ center: [a.lng, a.lat], zoom: 15 }); show(a); };
+    li.appendChild(b); $("list").appendChild(li);
+  });
+}
+function show(a) {
+  popup?.remove();
+  const el = document.createElement("div");
+  el.style.cssText = "color:#1b1f24;font-size:13px";
+  const row = (k, v) => { const p = document.createElement("div"); p.textContent = `${k}：${v}`; el.appendChild(p); };
+  const h = document.createElement("strong"); h.textContent = a.name || a.area_code; el.appendChild(h);
+  row("75歳以上", a.pop_75 ?? "秘匿・欠損"); row("65歳以上", a.pop_65 ?? "–"); row("総人口", a.pop_total ?? "–");
+  row("最寄り薬局まで", a.dist_m != null ? a.dist_m + " m" : "–"); row("標高差", a.elev_diff_m != null ? a.elev_diff_m + " m" : "–");
+  popup = new maplibregl.Popup({ closeButton: true }).setLngLat([a.lng, a.lat]).setDOMContent(el).addTo(map);
+}
+async function loadCity(code) {
+  $("status").textContent = "読み込み中…";
+  const [rows, gj] = await Promise.all([api(`/api/areas?city=${code}`), api(`/api/geojson/${code}`)]);
+  areas = rows;
+  for (const id of ["areas-line", "areas-fill"]) if (map.getLayer(id)) map.removeLayer(id);
+  if (map.getSource("areas")) map.removeSource("areas");
+  map.addSource("areas", { type: "geojson", data: gj });
+  map.addLayer({ id: "areas-fill", type: "fill", source: "areas", paint: { "fill-color": "rgba(120,130,140,0.10)" } }, map.getLayer("fac") ? "fac" : undefined);
+  map.addLayer({ id: "areas-line", type: "line", source: "areas", paint: { "line-color": "rgba(90,100,110,0.45)", "line-width": 0.6 } }, map.getLayer("fac") ? "fac" : undefined);
+  const lats = rows.map((r) => r.lat), lngs = rows.map((r) => r.lng);
+  if (rows.length) {
+    const bb = [Math.min(...lngs), Math.min(...lats), Math.max(...lngs), Math.max(...lats)];
+    map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: 30, duration: 0 });
+    const pad = 0.02, fac = await api(`/api/facilities?bbox=${bb[0] - pad},${bb[1] - pad},${bb[2] + pad},${bb[3] + pad}`);
+    const data = { type: "FeatureCollection", features: fac.map((f) => ({ type: "Feature", properties: { name: f.name }, geometry: { type: "Point", coordinates: [f.lng, f.lat] } })) };
+    if (map.getSource("fac")) map.getSource("fac").setData(data);
+    else { map.addSource("fac", { type: "geojson", data }); map.addLayer({ id: "fac", type: "circle", source: "fac", paint: { "circle-radius": 3.5, "circle-color": "#1565c0", "circle-stroke-color": "#fff", "circle-stroke-width": 1 } }); }
+  }
+  render();
+}
+map.on("load", async () => {
+  try {
+    const cities = await api("/api/cities");
+    if (!cities.length) { $("status").textContent = "データがまだ取り込まれていません。"; return; }
+    $("city").innerHTML = ""; for (const c of cities) { const o = document.createElement("option"); o.value = c.city_code; o.textContent = `${c.city_name || c.city_code}（${c.areas}）`; $("city").appendChild(o); }
+    $("city").onchange = (e) => loadCity(e.target.value).catch((err) => ($("status").textContent = "読み込み失敗：" + err.message));
+    $("dist").oninput = $("elev").oninput = render;
+    map.on("click", "areas-fill", (e) => { const a = areas.find((x) => x.area_code === e.features[0].properties.code); if (a) show(a); });
+    await loadCity(cities[0].city_code);
+  } catch (err) { $("status").textContent = "読み込み失敗：" + err.message; }
+});
+</script>
+</body>
+</html>
